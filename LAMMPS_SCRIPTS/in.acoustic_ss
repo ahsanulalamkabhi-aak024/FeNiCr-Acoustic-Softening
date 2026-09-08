@@ -1,0 +1,252 @@
+# SCRIPT 1.2: Fe-Ni-Cr baseline and vibration-assisted simple shear.
+# Includes per-atom kinetic energy, potential energy, and virial stress.
+# Active commands follow the author-supplied Script 1.2.
+# Comments describe how to configure each manuscript case.
+# Run from a NEW case directory containing this input, data.FeNiCr,
+# library.meam, and NiCrFe.meam. Example: lmp -in in.acoustic_ss
+# Copy the four files into a separate directory for each case to isolate outputs.
+#
+# CASE CONTROLS BELOW:
+# 1. disp_amplitude (angstrom) and freq (THz).
+# 2. n1, n2, n3 (timesteps) for baseline, elastic, or established-flow loading.
+# 3. For temperature cases: read_data, pair_style, pair_coeff, and T.
+#    Use the temperature-case amplitude/frequency and stage settings below.
+# Supplied case: A=0.5 angstrom, f=0.5 THz, established flow, T=1 K.
+# Study grid: A=0.1,0.2,0.3,0.4,0.5; f=0.5,0.8,1.0,1.2,1.5.
+# For composition/size cases, use the corresponding input structure.
+# The author used this same script with case-specific settings for baseline
+# and temperature runs. Active lines retain the supplied MEAM flow case.
+# Alternative commands below are comments: replace the corresponding active
+# lines in a case copy; do not enable both potential selections.
+
+# OUTPUT DIRECTORY
+# The script creates DumpFrames in the current working directory.
+shell           mkdir DumpFrames
+
+# INITIALIZATION
+# Metal units: angstrom, ps, eV, K; pressure/stress output is in bar.
+units           metal
+dimension       3
+boundary        p p p
+atom_style      atomic
+neighbor        1.0 nsq
+neigh_modify    once no every 1 delay 0 check yes
+
+# STRUCTURE
+# Atom types: 1=Fe, 2=Ni, 3=Cr.
+# Primary MEAM cases: use data.FeNiCr for the intended composition/size.
+# Temperature study: REPLACE the active read_data line with:
+# read_data       data.Fe60Ni15Cr25_t_30
+# Place the selected data file in the case working directory.
+read_data       data.FeNiCr
+
+# Enable triclinic box geometry for xy shear.
+change_box      all triclinic
+
+# MEAM POTENTIAL
+# Keep both MEAM files together. Preserve the two distinct element orders
+# in pair_coeff: library order Ni Cr Fe; atom-type mapping Fe Ni Cr.
+# TEMPERATURE STUDY: REPLACE BOTH active potential lines with:
+# pair_style      eam/alloy
+# pair_coeff      * * FeNiCr.t Fe Ni Cr
+# Place FeNiCr.t in the case directory. It replaces the two MEAM files
+# for this selection. Retain atom-type mapping Fe Ni Cr; do not map H.
+pair_style      meam
+pair_coeff      * * library.meam Ni Cr Fe NiCrFe.meam Fe Ni Cr
+
+# TIMESTEP
+# 0.001 ps per step. Stage settings below assume this value.
+variable        dt              equal 0.001
+timestep        ${dt}
+variable        Natoms          equal atoms
+
+# TARGET TEMPERATURE (K)
+# Primary MEAM study: 1.0.
+# Temperature study (manuscript Section 2.7): 1, 100, 200, 300, or 400.
+# For each temperature case, also select the EAM potential and 108000-atom
+# data file above, disp_amplitude=0.5, freq=0.5, and elastic stage lengths.
+# Each temperature requires a separate case directory.
+variable        T               equal 1.0
+
+# VIBRATION PARAMETERS
+# Edit disp_amplitude and freq for each study case.
+# omega and k_wave are derived quantities. Keep wavelength and Nbins fixed
+# when reproducing the reported amplitude-frequency sweep.
+variable        PI              equal 3.141592653589793
+variable        disp_amplitude  equal 0.5
+variable        freq            equal 0.5
+variable        omega           equal 2.0*${PI}*${freq}
+variable        wavelength      equal 5.0
+variable        k_wave          equal 2.0*${PI}/${wavelength}
+
+# Number of y-slabs used to assign the spatial phase: 20.
+variable        Nbins           equal 20
+
+
+# Time is measured from the post-equilibration timestep reset, not Stage 2.
+variable        Time            equal step*${dt}
+
+# SHEAR RATE
+# 0.001 per ps; with dt=0.001 ps, nominal strain increment is 1e-6 per step.
+variable        shear_rate      equal 0.001
+
+# VIRIAL STRESS
+# The supplied sign convention is preserved. ShearXY=-sum(c_sall[4])/vol.
+# Multiply reported bar values by 1e-4 to express them in GPa.
+# Kinetic contributions are excluded by the virial keyword.
+compute         sall all stress/atom NULL virial
+compute         S all reduce sum c_sall[1] c_sall[2] c_sall[3] c_sall[4] c_sall[5] c_sall[6]
+variable        Stressx         equal -c_S[1]/vol
+variable        Stressy         equal -c_S[2]/vol
+variable        Stressz         equal -c_S[3]/vol
+variable        Press           equal (c_S[1]+c_S[2]+c_S[3])/(3.0*vol)
+variable        ShearXY         equal -c_S[4]/vol
+variable        ShearXZ         equal -c_S[5]/vol
+variable        ShearYZ         equal -c_S[6]/vol
+
+# EQUILIBRATION
+# Velocity seed=12345. NPT at target T and zero pressure for 100000 steps
+# (100 ps). This equilibration is separate from n1, n2, and n3.
+velocity        all create ${T} 12345 mom yes rot yes dist gaussian
+fix             eq all npt temp ${T} ${T} 0.1 iso 0.0 0.0 1.0
+thermo          100
+thermo_style    custom step temp press pe ke etotal lx ly lz xy xz yz
+run             100000
+write_data      data.FeNiCr_relaxed
+
+# PREPARE DEFORMATION
+# Remove equilibration fix and reset the step counter before loading.
+unfix           eq
+reset_timestep  0
+
+# Record relaxed box dimensions and freeze the reference values after run 0.
+variable        Ly_ref          equal ly
+variable        XY_ref          equal xy
+variable        YLO_ref         equal ylo
+variable        YHI_ref         equal yhi
+run             0
+variable        Ly0             index ${Ly_ref}
+variable        XY0             index ${XY_ref}
+variable        YLO             index ${YLO_ref}
+variable        YHI             index ${YHI_ref}
+
+# Engineering shear strain relative to the relaxed box.
+variable        StrainXY        equal (xy-${XY0})/${Ly0}
+variable        y0              equal (${YLO}+${YHI})/2.0
+
+# SHEAR AND THERMOSTAT
+# NVT remains active on all atoms throughout the loading stages.
+# The author-supplied integration and imposed-motion commands are retained.
+fix             int all nvt temp ${T} ${T} 0.1
+fix             def all deform 1 xy erate ${shear_rate} units box remap x
+
+
+# GLOBAL TIME-SERIES OUTPUT
+# Every 100 steps (0.1 ps); ave/time uses one sample, not a cycle average.
+# Columns: timestep, strain_xy, shear_xy_bar, temperature_K,
+# potential_energy_eV_per_atom, kinetic_energy_eV_per_atom.
+# Script 1.2 retains the literal flow_ prefix in both output filenames.
+# Changing n1/n2/n3 does not rename outputs. Use a separate directory for each
+# elastic, flow, baseline, composition, size, or temperature case; interpret
+# the loading state from its input settings, not the flow_ filename prefix.
+variable        TempOut         equal temp
+variable        PEperAtom       equal pe/v_Natoms
+variable        KEperAtom       equal ke/v_Natoms
+fix             AvgShear all ave/time 100 1 100 &
+                v_StrainXY v_ShearXY v_TempOut v_PEperAtom v_KEperAtom &
+                file flow_shear_xy_wave_${disp_amplitude}_${freq}.txt
+
+# PER-ATOM OUTPUTS (SCRIPT 1.2)
+# Virial stress-volume components exclude kinetic contributions.
+compute         peratom all stress/atom NULL virial
+
+# Per-atom energies in eV.
+compute         KEatom all ke/atom
+compute         PEatom all pe/atom
+
+# Dump every 100 timesteps (0.1 ps with the supplied dt), sorted by atom ID.
+# Columns in each atomic record:
+# 1 id; 2 type (1=Fe, 2=Ni, 3=Cr); 3 x; 4 y; 5 z (angstrom).
+# 6 c_peratom[4] (xy), 7 c_peratom[5] (xz), 8 c_peratom[6] (yz):
+#   virial stress-volume components in bar*angstrom^3, not stress in GPa.
+# 9 c_KEatom: kinetic energy of this atom in eV.
+# 10 c_PEatom: potential energy of this atom in eV.
+# These energy columns support per-atom energy visualization in OVITO.
+dump            d1 all custom 100 &
+                DumpFrames/flow_dump_${disp_amplitude}_${freq}.shear.wave &
+                id type x y z &
+                c_peratom[4] c_peratom[5] c_peratom[6] &
+                c_KEatom c_PEatom
+dump_modify     d1 sort id
+thermo          100
+
+# Loading-stage thermodynamic output; equilibration has its own output above.
+thermo_style    custom step temp pe ke press v_Press v_StrainXY v_ShearXY lx ly lz xy
+
+# STAGE LENGTHS: EDIT THESE THREE VALUES TO SELECT THE LOADING STATE
+#                        n1       n2      n3
+# Elastic/pre-flow:       100000   10000   10000
+# Established flow:       190000   30000   30000  (supplied values)
+# At the unchanged dt and shear_rate:
+# Elastic vibration window: strain 0.10-0.11; final strain 0.12.
+# Flow vibration window: strain 0.19-0.22; final strain 0.25.
+# n1=shear before vibration; n2=shear with vibration; n3=shear after removal.
+# Baseline: set n1=250000, n2=0, n3=0; final strain is 0.25.
+# The Stage 2 setup/removal and run 0 commands still execute, but there
+# are no finite-duration vibration steps. Amplitude/frequency remain
+# defined for the expressions and filename; they do not add vibration steps.
+# Temperature vibration cases: n1=100000, n2=10000, n3=10000,
+# A=0.5 angstrom and f=0.5 THz. These are case settings, not extra commands.
+# The manuscript does not claim a matched baseline at every temperature.
+variable        n1              equal 190000
+variable        n2              equal 30000
+variable        n3              equal 30000
+
+# STAGE 1: SHEAR BEFORE VIBRATION
+print           "Stage 1: simple shear only"
+run             ${n1}
+
+# STAGE 2: ASSIGN VIBRATION BY Y-SLAB
+# Slab bounds use the frozen relaxed-box references. Group membership is
+# assigned when the loop runs; it is not a dynamic group update.
+# Each slab receives an x-displacement A*cos(omega*time-k*(y_mid-y0)).
+variable        y_bin           equal (${YHI}-${YLO})/${Nbins}
+
+# Loop over the y-slabs.
+variable        j loop ${Nbins}
+label           make_disp
+  variable      block_y_l       equal ${YLO}+(${j}-1)*${y_bin}
+  variable      block_y_h       equal ${YLO}+(${j})*${y_bin}
+  variable      block_y_m       equal ${YLO}+(${j}-0.5)*${y_bin}
+  variable      y_dist          equal ${block_y_m}-${y0}
+  region        Block_${j} block INF INF ${block_y_l} ${block_y_h} INF INF units box
+  group         Atoms_Block_${j} region Block_${j}
+  variable      disp_${j} equal ${disp_amplitude}*cos(${omega}*v_Time-${k_wave}*(${y_dist}))
+
+# Preserved fix move variable arguments: x y z vx vy vz.
+  fix           Disp_${j} Atoms_Block_${j} move variable v_disp_${j} NULL NULL NULL NULL NULL units box
+  variable      block_y_l delete
+  variable      block_y_h delete
+  variable      block_y_m delete
+  variable      y_dist    delete
+next            j
+jump            SELF make_disp
+print           "Stage 2: simple shear + acoustic vibration"
+run             ${n2}
+
+# Loop over the y-slabs.
+variable        j loop ${Nbins}
+
+# STAGE 3: REMOVE EACH VIBRATION FIX, GROUP, AND REGION
+# Shear deformation and the NVT fix remain active.
+label           kill_disp
+  unfix         Disp_${j}
+  group         Atoms_Block_${j} delete
+  region        Block_${j} delete
+next            j
+jump            SELF kill_disp
+print           "Stage 3: simple shear only after vibration"
+run             ${n3}
+
+# Save the final configuration in the current case directory.
+write_data      data.FeNiCr_sheared_wave

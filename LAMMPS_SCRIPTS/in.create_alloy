@@ -1,0 +1,87 @@
+# Create an unrelaxed random FCC Fe-Ni-Cr alloy (MEAM sample).
+# FCC alloy preparation with manuscript composition and size settings.
+# Run in a separate preparation directory with library.meam and NiCrFe.meam:
+# lmp -in in.create_alloy
+# The command write_data creates data.FeNiCr; use a fresh directory to avoid
+# replacing the supplied historical configuration.
+# Atom types: 1=Fe, 2=Ni, 3=Cr. Supplied target: Fe60Ni15Cr25, Rep=15.
+# This script constructs a lattice and assigns types; it does not equilibrate it.
+units		metal
+boundary	p p p
+
+# MODEL SIZE
+# A is the lattice parameter (3.6 angstrom), not vibration amplitude.
+# Edit Rep for the cubic replication factor:
+# Manuscript Section 2.6 size cases (edit the active Rep value below):
+# Rep     atoms       nominal cubic side length (angstrom)
+# 15      13500       54
+# 20      32000       72
+# 25      62500       90
+# 30      108000      108
+# For the size sweep keep Fe60Ni15Cr25 and A=3.6 fixed.
+# For the composition sweep keep Rep=15 (13500 atoms).
+variable	A equal 3.6
+variable	Rep equal 15
+
+# Legacy conversion variable, unused below; kept to preserve commands.
+variable	cfac equal 1.0e-4
+
+# FCC LATTICE
+# Cartesian axes coincide with [100], [010], [001]. All sites start as Fe.
+atom_style	atomic
+lattice		fcc ${A} orient x 1 0 0 orient y 0 1 0 orient z 0 0 1
+region		box block 0 ${Rep} 0 ${Rep} 0 ${Rep}
+create_box	3 box
+create_atoms	1 box
+
+# Nominal atom count; this variable is retained even though not used later.
+variable	N_T equal 4*${Rep}*${Rep}*${Rep}
+
+# COMPOSITION CONTROLS
+# Set fr_Fe, fr_Ni, fr_Cr to target atomic fractions summing to 1.
+# Enter fractions, not percentage numbers: 60% is 0.60, not 60.
+# Manuscript Section 2.6 composition cases:
+# Composition        fr_Fe    fr_Ni    fr_Cr
+# Fe60Ni15Cr25       0.60     0.15     0.25   (supplied default)
+# Fe55Ni20Cr25       0.55     0.20     0.25
+# Fe65Ni15Cr20       0.65     0.15     0.20
+# Fe65Ni10Cr25       0.65     0.10     0.25
+# Fe55Ni15Cr30       0.55     0.15     0.30
+# Edit the three active fraction values below for each composition.
+# Do not change fr_Cr_new manually; it is calculated from these fractions.
+# The actual substitutions use fr_Ni and fr_Cr; fr_Fe is descriptive only.
+# Fe remains after Ni and Cr substitution. Random type/fraction assignment
+# produces approximate fractions; it does not force exact element counts.
+variable	fr_Fe equal 0.60
+variable	fr_Ni equal 0.15
+variable	fr_Cr equal 0.25
+
+# Assign Ni from all initial Fe sites with fixed seed 12345.
+set		group all type/fraction 2 ${fr_Ni} 12345
+
+# Assign Cr only among sites still occupied by Fe. The adjusted fraction
+# fr_Cr/(1-fr_Ni) targets the total Cr fraction. Cr seed=54321.
+# Keep the supplied data file for the exact historical configuration;
+# a new generation is not automatically byte-identical across environments.
+group		FE type 1
+variable	fr_Cr_new equal ${fr_Cr}/(1-${fr_Ni})
+set		group FE type/fraction 3 ${fr_Cr_new} 54321
+
+# POTENTIAL
+# Preserve library order Ni Cr Fe and atom-type mapping Fe Ni Cr.
+# This preparation sample uses MEAM. For the reported EAM temperature runs,
+# use the provided data.Fe60Ni15Cr25_t_30 with FeNiCr.t in in.acoustic_ss.
+pair_style	meam
+pair_coeff	* * library.meam Ni Cr Fe NiCrFe.meam Fe Ni Cr
+neighbor	1.0 nsq
+neigh_modify	once no every 1 delay 0 check yes
+
+# OUTPUT
+# Unrelaxed data.FeNiCr, read by in.acoustic_ss. Equilibration occurs there.
+# Generate each composition/size in its own directory to preserve all cases.
+# Suggested directory labels: Fe55Ni20Cr25_Rep15 or Fe60Ni15Cr25_Rep30.
+# Keep the output name data.FeNiCr within each case to reuse read_data.
+# The composition/size vibration checks use disp_amplitude=0.5, freq=0.5,
+# n1=100000, n2=10000, n3=10000 in in.acoustic_ss. Their baseline uses
+# n1=250000, n2=0, n3=0 with the matching structure.
+write_data	data.FeNiCr
